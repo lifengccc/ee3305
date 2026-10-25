@@ -31,14 +31,22 @@ class Controller(Node):
         self.max_ang_vel_ = self.get_parameter("max_ang_vel").value
 
         # Handles: Topic Subscribers
-        # !TODO: path subscriber
+        self.sub_path_ = self.create_subscription(
+            Path, "path", self.callbackSubPath_, 10
+        )
 
-        # !TODO: odometry subscriber
+        self.sub_odom_ = self.create_subscription(
+            Odometry, "odom", self.callbackSubOdom_, 10
+        )
 
         # Handles: Topic Publishers
-        # !TODO: command velocities publisher
+        self.pub_cmd_vel_ = self.create_publisher(
+            TwistStamped, "cmd_vel", 10
+        )
 
-        # !TODO: lookahead point publisher
+        self.pub_lookahead_ = self.create_publisher(
+            PoseStamped, "lookahead", 10
+        )
         
         # Handles: Timers
         self.timer = self.create_timer(1.0 / self.frequency_, self.callbackTimer_)
@@ -55,18 +63,19 @@ class Controller(Node):
             self.get_logger().warn(f"Received path message is empty!")
             return  # do not update the path if no path is returned. This will ensure the copied path contains at least one point when the first non-empty path is received.
 
-        # !TODO: copy the array from the path
-        self.path_poses_ = []
+        self.path_poses_ = list(msg.poses)
 
         self.received_path_ = True
 
     # Odometry subscriber callback
     def callbackSubOdom_(self, msg: Odometry):
-        # !TODO: write robot pose to rbt_x_, rbt_y_, rbt_yaw_
         self.rbt_x_ = msg.pose.pose.position.x
-
+        self.rbt_y_ = msg.pose.pose.position.y
         q = msg.pose.pose.orientation
-        self.rbt_yaw_ = q.w
+        self.rbt_yaw_ = atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
 
         self.received_odom_ = True
 
