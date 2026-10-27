@@ -21,6 +21,9 @@ class Controller(Node):
         self.declare_parameter("stop_thres", float(0.1))
         self.declare_parameter("max_lin_vel", float(0.2))
         self.declare_parameter("max_ang_vel", float(2.0))
+        # Improvements. Set either to 0.0 to disable it and get the baseline pure pursuit.
+        self.declare_parameter("curvature_speed_gain", float(0.0))  # k in v = v0 / (1 + k|c|)
+        self.declare_parameter("rotate_in_place_angle", float(0.0))  # [rad] heading error above which the robot turns on the spot
 
         # Parameters: Get Values
         self.frequency_ = self.get_parameter("frequency").value
@@ -29,6 +32,8 @@ class Controller(Node):
         self.stop_thres_ = self.get_parameter("stop_thres").value
         self.max_lin_vel_ = self.get_parameter("max_lin_vel").value
         self.max_ang_vel_ = self.get_parameter("max_ang_vel").value
+        self.curvature_speed_gain_ = self.get_parameter("curvature_speed_gain").value
+        self.rotate_in_place_angle_ = self.get_parameter("rotate_in_place_angle").value
 
         # Handles: Topic Subscribers
         self.sub_path_ = self.create_subscription(
@@ -54,6 +59,7 @@ class Controller(Node):
         # Other Instance Variables
         self.received_odom_ = False
         self.received_path_ = False
+        self.rotating_ = False
 
     # Callbacks =============================================================
     
@@ -137,12 +143,41 @@ class Controller(Node):
             self.pub_cmd_vel_.publish(msg_stop)
             return
 
-        # get curvature: c = 2 y' / L^2, with y' the lateral offset in the robot frame
+        # robot-frame coordinates of the lookahead point
+        lx = cos(self.rbt_yaw_) * dx + sin(self.rbt_yaw_) * dy
         ly = -sin(self.rbt_yaw_) * dx + cos(self.rbt_yaw_) * dy
+
+        # Improvement 2: rotate in place when the lookahead point is far off the robot's heading.
+        # Hysteresis (resume at half the angle) prevents chattering at the threshold.
+        if self.rotate_in_place_angle_ > 0.0:
+            heading_err = atan2(ly, lx)
+            if abs(heading_err) > self.rotate_in_place_angle_:
+                self.rotating_ = True
+            elif abs(heading_err) < 0.5 * self.rotate_in_place_angle_:
+                self.rotating_ = False
+
+            if self.rotating_:
+                msg_rot = TwistStamped()
+                msg_rot.header.stamp = self.get_clock().now().to_msg()
+                msg_rot.twist.angular.z = max(
+                    -self.max_ang_vel_, min(self.max_ang_vel_, 2.0 * heading_err)
+                )
+                self.pub_cmd_vel_.publish(msg_rot)
+                return
+
+        # get curvature: c = 2 y' / L^2, with y' the lateral offset in the robot frame
         curvature = 2.0 * ly / (dist * dist)
 
         # calculate velocities
         lin_vel = self.lookahead_lin_vel_
+
+        # Improvement 1: slow down on tight curves so that the required angular velocity
+        # stays within max_ang_vel_ and the saturation below does not distort the curvature.
+        if self.curvature_speed_gain_ > 0.0:
+            lin_vel = lin_vel / (1.0 + self.curvature_speed_gain_ * abs(curvature))
+            if abs(curvature) > 1e-6:
+                lin_vel = min(lin_vel, self.max_ang_vel_ / abs(curvature))
+
         ang_vel = lin_vel * curvature
 
         # saturate velocities. The following can result in the wrong curvature,
