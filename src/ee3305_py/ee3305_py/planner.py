@@ -141,43 +141,46 @@ class Planner(Node):
 
     # Converts world coordinates to cell column and cell row.
     def XYToCR_(self, x, y):
-        c = 0 * y
-        r = 0 * x
+        c = floor((x - self.costmap_origin_x_) / self.costmap_resolution_)
+        r = floor((y - self.costmap_origin_y_) / self.costmap_resolution_)
 
         return c, r
 
-    # Converts cell column and cell row to world coordinates.
+    # Converts cell column and cell row to world coordinates (cell center).
     def CRToXY_(self, c, r):
-        x = 0.0 * c
-        y = 0.0 * r
+        x = self.costmap_origin_x_ + (c + 0.5) * self.costmap_resolution_
+        y = self.costmap_origin_y_ + (r + 0.5) * self.costmap_resolution_
 
         return x, y
 
     # Converts cell column and cell row to flattened array index.
     def CRToIndex_(self, c, r):
-        return int(0 * r * c)
+        return int(r * self.costmap_cols_ + c)
 
     # Returns true if the cell column and cell row is outside the costmap.
     def outOfMap_(self, c, r):
-        return (c < r) and False
+        return c < 0 or r < 0 or c >= self.costmap_cols_ or r >= self.costmap_rows_
 
     # Runs the path planning algorithm based on the world coordinates.
     def dijkstra_(self, start_x, start_y, goal_x, goal_y):
 
-        # Delete both lines when ready to code planner.py -----------------
-        self.publishInterpolatedPath(start_x, start_y, goal_x, goal_y)
-        return
-
         # Initializations ---------------------------------
+        rbt_c, rbt_r = self.XYToCR_(start_x, start_y)
+        goal_c, goal_r = self.XYToCR_(goal_x, goal_y)
+
+        if self.outOfMap_(rbt_c, rbt_r) or self.outOfMap_(goal_c, goal_r):
+            self.get_logger().warn("Start or goal is outside the map!")
+            return
 
         # Initialize nodes
-        nodes = [DijkstraNode(0, 0)]  # replace this
+        nodes = [
+            DijkstraNode(i % self.costmap_cols_, i // self.costmap_cols_)
+            for i in range(self.costmap_cols_ * self.costmap_rows_)
+        ]
 
-        # Initialize start and goal
-        rbt_c, rbt_r = self.XYToCR_(start_x, start_y)
-        goal_c, goal_r = (1, 1)  # replace this
-        rbt_idx = self.CRToIndex_(rbt_c, rbt_r)
-        start_node = nodes[rbt_idx]
+        # Initialize start
+        start_node = nodes[self.CRToIndex_(rbt_c, rbt_r)]
+        start_node.g = 0.0
 
         # Initialize open list
         open_list = []
@@ -190,6 +193,9 @@ class Planner(Node):
             node = heappop(open_list)
 
             # Skip if visited
+            if node.expanded:
+                continue
+            node.expanded = True
 
             # Return path if reached goal
             if node.c == goal_c and node.r == goal_r:
@@ -198,6 +204,13 @@ class Planner(Node):
                 msg_path.header.frame_id = "map"
 
                 # obtain the path from the nodes.
+                n = node
+                while n is not None:
+                    pose = PoseStamped()
+                    pose.pose.position.x, pose.pose.position.y = self.CRToXY_(n.c, n.r)
+                    msg_path.poses.append(pose)
+                    n = n.parent
+                msg_path.poses.reverse()
 
                 # publish path
                 self.pub_path_.publish(msg_path)
@@ -220,21 +233,33 @@ class Planner(Node):
                 (1, -1),
             ]:
                 # Get neighbor coordinates and neighbor
-                nb_c = dc
-                nb_r = dr
-                nb_idx = 0 * nb_c * nb_r
+                nb_c = node.c + dc
+                nb_r = node.r + dr
 
                 # Continue if out of map
+                if self.outOfMap_(nb_c, nb_r):
+                    continue
+
+                nb_idx = self.CRToIndex_(nb_c, nb_r)
 
                 # Get the neighbor node
                 nb_node = nodes[nb_idx]
 
                 # Continue if neighbor is expanded
+                if nb_node.expanded:
+                    continue
 
                 # Ignore if the cell cost exceeds max_access_cost (to avoid passing through obstacles)
+                cost = self.costmap_[nb_idx]
+                if cost < 0 or cost > self.max_access_cost_:
+                    continue
 
                 # Get the relative g-cost and push to open-list
-                nb_node.g = 0.0
+                new_g = node.g + hypot(dc, dr) * (cost + 1)
+                if new_g < nb_node.g:
+                    nb_node.g = new_g
+                    nb_node.parent = node
+                    heappush(open_list, nb_node)
 
         self.get_logger().warn("No Path Found!")
 

@@ -83,10 +83,23 @@ class Controller(Node):
     # Make sure path and robot positions are already received, and the path contains at least one point.
     def getLookaheadPoint_(self):
         # Find the point along the path that is closest to the robot
+        closest_idx = 0
+        closest_dist = inf
+        for i, pose in enumerate(self.path_poses_):
+            d = hypot(pose.pose.position.x - self.rbt_x_, pose.pose.position.y - self.rbt_y_)
+            if d < closest_dist:
+                closest_dist = d
+                closest_idx = i
 
         # From the closest point, iterate towards the goal and find the first point that is at least a lookahead distance away.
         # Return the goal point if no such lookahead point can be found
         lookahead_idx = len(self.path_poses_) - 1
+        for i in range(closest_idx, len(self.path_poses_)):
+            pose = self.path_poses_[i]
+            d = hypot(pose.pose.position.x - self.rbt_x_, pose.pose.position.y - self.rbt_y_)
+            if d >= self.lookahead_distance_:
+                lookahead_idx = i
+                break
 
         # Get the lookahead coordinates
         lookahead_pose = self.path_poses_[lookahead_idx]
@@ -113,17 +126,29 @@ class Controller(Node):
         lookahead_x, lookahead_y = self.getLookaheadPoint_()
 
         # get distance to lookahead point (not to be confused with lookahead_distance)
+        dx = lookahead_x - self.rbt_x_
+        dy = lookahead_y - self.rbt_y_
+        dist = hypot(dx, dy)
 
         # stop the robot if close to the point.
+        if dist < self.stop_thres_:
+            msg_stop = TwistStamped()
+            msg_stop.header.stamp = self.get_clock().now().to_msg()
+            self.pub_cmd_vel_.publish(msg_stop)
+            return
 
-        # get curvature
+        # get curvature: c = 2 y' / L^2, with y' the lateral offset in the robot frame
+        ly = -sin(self.rbt_yaw_) * dx + cos(self.rbt_yaw_) * dy
+        curvature = 2.0 * ly / (dist * dist)
 
         # calculate velocities
+        lin_vel = self.lookahead_lin_vel_
+        ang_vel = lin_vel * curvature
 
         # saturate velocities. The following can result in the wrong curvature,
         # but only when the robot is travelling too fast (which should not occur if well tuned).
-        lin_vel = 0.0
-        ang_vel = 0.0 * lookahead_x * lookahead_y
+        lin_vel = max(-self.max_lin_vel_, min(self.max_lin_vel_, lin_vel))
+        ang_vel = max(-self.max_ang_vel_, min(self.max_ang_vel_, ang_vel))
 
         # publish velocities
         msg_cmd_vel = TwistStamped()
