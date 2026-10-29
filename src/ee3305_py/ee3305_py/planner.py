@@ -1,4 +1,5 @@
 from heapq import heappush, heappop
+from itertools import count
 from math import hypot, floor, inf, sqrt, atan2, pi
 from time import perf_counter
 
@@ -205,14 +206,17 @@ class Planner(Node):
         start_node.g = 0.0
 
         # Initialize open list
+        # Open list entries are (g, tie-breaker, node) snapshots. Pushing the node alone would let a later
+        # g update change the key of an entry already inside the heap and corrupt its ordering.
+        tie = count()
         open_list = []
-        heappush(open_list, start_node)
+        heappush(open_list, (start_node.g, next(tie), start_node))
 
         # Expansion Loop ---------------------------------
         while len(open_list) > 0:
 
             # Poll cheapest node
-            node = heappop(open_list)
+            node = heappop(open_list)[2]
 
             # Skip if visited
             if node.expanded:
@@ -266,7 +270,7 @@ class Planner(Node):
                 if new_g < nb_node.g:
                     nb_node.g = new_g
                     nb_node.parent = node
-                    heappush(open_list, nb_node)
+                    heappush(open_list, (nb_node.g, next(tie), nb_node))
 
         self.get_logger().warn(f"[Dijkstra] No Path Found! Expanded {n_expanded} nodes.")
 
@@ -413,11 +417,14 @@ class Planner(Node):
         start_node.h = self.heuristic_weight_ * self.heuristic_(rbt_c, rbt_r, goal_c, goal_r)
         start_node.f = start_node.g + start_node.h
 
+        # Entries are (f, h, tie-breaker, node) snapshots, so later updates to a node cannot corrupt the heap order.
+        # Ties in f are broken towards the smaller h.
+        tie = count()
         open_list = []
-        heappush(open_list, start_node)
+        heappush(open_list, (start_node.f, start_node.h, next(tie), start_node))
 
         while len(open_list) > 0:
-            node = heappop(open_list)
+            node = heappop(open_list)[3]
 
             if node.expanded:
                 continue
@@ -462,7 +469,7 @@ class Planner(Node):
                     nb_node.h = self.heuristic_weight_ * self.heuristic_(nb_c, nb_r, goal_c, goal_r)
                     nb_node.f = nb_node.g + nb_node.h
                     nb_node.parent = node
-                    heappush(open_list, nb_node)
+                    heappush(open_list, (nb_node.f, nb_node.h, next(tie), nb_node))
 
         self.get_logger().warn(f"[A*] No Path Found! Expanded {n_expanded} nodes.")
 
